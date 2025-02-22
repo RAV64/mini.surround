@@ -1,7 +1,7 @@
-local islist = vim.fn.has("nvim-0.10") == 1 and vim.islist or vim.tbl_islist
-local tbl_flatten = vim.fn.has("nvim-0.10") == 1 and function(x)
+local islist = vim.islist
+local tbl_flatten = function(x)
 	return vim.iter(x):flatten(math.huge):totable()
-end or vim.tbl_flatten
+end
 
 local Surround = {}
 local cache = {}
@@ -387,16 +387,10 @@ local make_surrounding_table = function()
 	})
 end
 
-local get_surround_spec = function(sur_type, use_cache)
-	local res
-
-	if use_cache then
-		res = cache[sur_type]
-		if res ~= nil then
-			return res
-		end
-	else
-		cache = {}
+local get_surround_spec = function(sur_type)
+	local res = cache[sur_type]
+	if res ~= nil then
+		return res
 	end
 
 	local char = user_surround_id(sur_type)
@@ -420,9 +414,7 @@ local get_surround_spec = function(sur_type, use_cache)
 
 	res = setmetatable(res, { __index = { id = char } })
 
-	if use_cache then
-		cache[sur_type] = res
-	end
+	cache[sur_type] = res
 
 	return res
 end
@@ -757,12 +749,7 @@ end
 Surround.add = function(mode)
 	local marks = get_marks_pos(mode)
 
-	local surr_info
-	if mode == "visual" then
-		surr_info = get_surround_spec("output", false)
-	else
-		surr_info = get_surround_spec("output", true)
-	end
+	local surr_info = get_surround_spec("output")
 	if surr_info == nil then
 		return "<Esc>"
 	end
@@ -780,7 +767,7 @@ Surround.add = function(mode)
 end
 
 Surround.delete = function()
-	local surr = find_surrounding(get_surround_spec("input", true))
+	local surr = find_surrounding(get_surround_spec("input"))
 	if surr == nil then
 		return "<Esc>"
 	end
@@ -794,12 +781,12 @@ Surround.delete = function()
 end
 
 Surround.replace = function()
-	local surr = find_surrounding(get_surround_spec("input", true))
+	local surr = find_surrounding(get_surround_spec("input"))
 	if surr == nil then
 		return "<Esc>"
 	end
 
-	local new_surr_info = get_surround_spec("output", true)
+	local new_surr_info = get_surround_spec("output")
 	if new_surr_info == nil then
 		return "<Esc>"
 	end
