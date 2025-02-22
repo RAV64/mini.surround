@@ -11,10 +11,6 @@ M.config = {
 
 	n_lines = 20,
 
-	respect_selection_type = false,
-
-	search_method = "cover",
-
 	silent = false,
 }
 
@@ -86,26 +82,6 @@ local is_region_pair_array = function(x)
 	return true
 end
 
-local span_distance = {
-
-	next = function(span_1, span_2)
-		return math.abs(span_1.from - span_2.from)
-	end,
-	prev = function(span_1, span_2)
-		return math.abs(span_1.to - span_2.to)
-	end,
-	near = function(span_1, span_2)
-		return math.min(math.abs(span_1.from - span_2.from), math.abs(span_1.to - span_2.to))
-	end,
-}
-
-local is_span_on_left = function(span_1, span_2)
-	if span_1 == nil or span_2 == nil then
-		return false
-	end
-	return (span_1.from <= span_2.from) and (span_1.to <= span_2.to)
-end
-
 local new_span = function(from, to)
 	return { from = from, to = to == nil and from or (to + 1) }
 end
@@ -134,6 +110,7 @@ local string_find = function(s, pattern, init)
 	local cur_from, cur_to = from, to
 	while cur_to == to do
 		from, to = cur_from, cur_to
+		---@diagnostic disable-next-line: cast-local-type
 		cur_from, cur_to = string.find(s, pattern, cur_from + 1)
 	end
 
@@ -220,115 +197,20 @@ local is_better_covering_span = function(candidate, current, reference)
 	return nil
 end
 
-local span_compare_methods = {
-	cover = function(candidate, current, reference)
-		local res = is_better_covering_span(candidate, current, reference)
-		if res ~= nil then
-			return res
-		end
-		return false
-	end,
+local cover = function(candidate, current, reference)
+	local res = is_better_covering_span(candidate, current, reference)
+	if res ~= nil then
+		return res
+	end
+	return false
+end
 
-	cover_or_next = function(candidate, current, reference)
-		local res = is_better_covering_span(candidate, current, reference)
-		if res ~= nil then
-			return res
-		end
-
-		if not is_span_on_left(reference, candidate) then
-			return false
-		end
-		if current == nil then
-			return true
-		end
-
-		local dist = span_distance.next
-		return dist(candidate, reference) < dist(current, reference)
-	end,
-
-	cover_or_prev = function(candidate, current, reference)
-		local res = is_better_covering_span(candidate, current, reference)
-		if res ~= nil then
-			return res
-		end
-
-		if not is_span_on_left(candidate, reference) then
-			return false
-		end
-		if current == nil then
-			return true
-		end
-
-		local dist = span_distance.prev
-		return dist(candidate, reference) < dist(current, reference)
-	end,
-
-	cover_or_nearest = function(candidate, current, reference)
-		local res = is_better_covering_span(candidate, current, reference)
-		if res ~= nil then
-			return res
-		end
-
-		if current == nil then
-			return true
-		end
-
-		local dist = span_distance.near
-		return dist(candidate, reference) < dist(current, reference)
-	end,
-
-	next = function(candidate, current, reference)
-		if is_span_covering(candidate, reference) then
-			return false
-		end
-
-		if not is_span_on_left(reference, candidate) then
-			return false
-		end
-		if current == nil then
-			return true
-		end
-
-		local dist = span_distance.next
-		return dist(candidate, reference) < dist(current, reference)
-	end,
-
-	prev = function(candidate, current, reference)
-		if is_span_covering(candidate, reference) then
-			return false
-		end
-
-		if not is_span_on_left(candidate, reference) then
-			return false
-		end
-		if current == nil then
-			return true
-		end
-
-		local dist = span_distance.prev
-		return dist(candidate, reference) < dist(current, reference)
-	end,
-
-	nearest = function(candidate, current, reference)
-		if is_span_covering(candidate, reference) then
-			return false
-		end
-
-		if current == nil then
-			return true
-		end
-
-		local dist = span_distance.near
-		return dist(candidate, reference) < dist(current, reference)
-	end,
-}
-
-local is_better_span = function(candidate, current, reference, opts)
+local is_better_span = function(candidate, current, reference)
 	if is_span_covering(reference, candidate) or is_span_equal(candidate, reference) then
 		return false
 	end
 
-	return span_compare_methods[opts.search_method](candidate, current, reference)
+	return cover(candidate, current, reference)
 end
 
 local is_composed_pattern = function(x)
@@ -354,22 +236,6 @@ local get_selection_type = function(mode)
 	if (mode == "block") or (mode == "visual" and vim.fn.visualmode() == "\22") then
 		return "blockwise"
 	end
-end
-
-local get_range_indent = function(from_line, to_line)
-	local n_indent, indent = math.huge, nil
-
-	local lines = vim.api.nvim_buf_get_lines(0, from_line - 1, to_line, true)
-	local n_indent_cur, indent_cur
-	for _, l in ipairs(lines) do
-		_, n_indent_cur, indent_cur = l:find("^(%s*)")
-
-		if n_indent_cur < n_indent and n_indent_cur < l:len() then
-			n_indent, indent = n_indent_cur, indent_cur
-		end
-	end
-
-	return indent or ""
 end
 
 local set_cursor = function(line, col)
@@ -464,28 +330,9 @@ local wrap_callable_table = function(x)
 	return x
 end
 
-local is_disabled = function()
-	return vim.g.minisurround_disable == true or vim.b.minisurround_disable == true
-end
-
-local validate_search_method = function(x)
-	local allowed_methods = vim.tbl_keys(span_compare_methods)
-	if vim.tbl_contains(allowed_methods, x) then
-		return
-	end
-
-	table.sort(allowed_methods)
-	local allowed_methods_string = table.concat(vim.tbl_map(vim.inspect, allowed_methods), ", ")
-	error("`search_method` should be one of " .. allowed_methods_string)
-end
-
-local make_operator = function(task, search_method, ask_for_textobject)
+local make_operator = function(task, ask_for_textobject)
 	return function()
-		if is_disabled() then
-			return [[\<Esc>]]
-		end
-
-		cache = { count = vim.v.count1, search_method = search_method }
+		cache = { count = vim.v.count1 }
 
 		vim.o.operatorfunc = "v:lua." .. task
 
@@ -724,11 +571,6 @@ local region_replace = function(region, text)
 	pcall(vim.api.nvim_buf_set_text, 0, start_row, start_col, end_row, end_col, text)
 end
 
-local set_cursor_nonblank = function(line)
-	set_cursor(line, 1)
-	vim.cmd("normal! ^")
-end
-
 local pos_to_left = function(pos)
 	if pos.line == 1 and pos.col == 1 then
 		return { line = pos.line, col = pos.col }
@@ -748,17 +590,6 @@ local pos_to_right = function(pos)
 		return { line = pos.line + 1, col = 1 }
 	end
 	return { line = pos.line, col = pos.col + 1 }
-end
-
-local shift_indent = function(command, from_line, to_line)
-	if to_line < from_line then
-		return
-	end
-	vim.cmd("silent " .. from_line .. "," .. to_line .. command)
-end
-
-local is_line_blank = function(line_num)
-	return vim.fn.nextnonblank(line_num) ~= line_num
 end
 
 local extract_surr_spans = function(s, extract_pattern)
@@ -865,10 +696,10 @@ local get_neighborhood = function(reference_region, n_neighbors)
 	}
 end
 
-local find_best_match = function(neighborhood, surr_spec, reference_span, opts)
+local find_best_match = function(neighborhood, surr_spec, reference_span)
 	local best_span, best_nested_pattern, current_nested_pattern
 	local f = function(span)
-		if is_better_span(span, best_span, reference_span, opts) then
+		if is_better_span(span, best_span, reference_span) then
 			best_span = span
 			best_nested_pattern = current_nested_pattern
 		end
@@ -914,7 +745,7 @@ local find_surrounding_region_pair = function(surr_spec, opts)
 	local reference_span = neigh.region_to_span(reference_region)
 
 	local find_next = function(cur_reference_span)
-		local res = find_best_match(neigh, surr_spec, cur_reference_span, opts)
+		local res = find_best_match(neigh, surr_spec, cur_reference_span)
 
 		if res.span == nil then
 			if n_lines == 0 or neigh.n_neighbors > 0 then
@@ -926,7 +757,7 @@ local find_surrounding_region_pair = function(surr_spec, opts)
 			reference_span = neigh.region_to_span(reference_region)
 			cur_reference_span = neigh.region_to_span(cur_reference_region)
 
-			res = find_best_match(neigh, surr_spec, cur_reference_span, opts)
+			res = find_best_match(neigh, surr_spec, cur_reference_span)
 		end
 
 		return res
@@ -981,7 +812,6 @@ local get_default_opts = function()
 		n_lines = config.n_lines,
 		n_times = cache.count or vim.v.count1,
 		reference_region = { from = { line = cur_pos[1], col = cur_pos[2] + 1 } },
-		search_method = cache.search_method or config.search_method,
 	}
 end
 
@@ -1016,15 +846,13 @@ local find_surrounding = function(surr_spec, opts)
 	end
 
 	opts = vim.tbl_deep_extend("force", get_default_opts(), opts or {})
-	validate_search_method(opts.search_method)
 
 	local region_pair = find_surrounding_region_pair(surr_spec, opts)
 	if region_pair == nil then
-		local msg = ([[No surrounding %s found within %d line%s and `config.search_method = '%s'`.]]):format(
+		local msg = ([[No surrounding %s found within %d line%s.]]):format(
 			vim.inspect((opts.n_times > 1 and opts.n_times or "") .. surr_spec.id),
 			opts.n_lines,
-			opts.n_lines > 1 and "s" or "",
-			opts.search_method
+			opts.n_lines > 1 and "s" or ""
 		)
 		message(msg)
 	end
@@ -1036,10 +864,6 @@ error = function(msg)
 end
 
 M.add = function(mode)
-	if is_disabled() then
-		return "<Esc>"
-	end
-
 	local marks = get_marks_pos(mode)
 
 	local surr_info
@@ -1058,44 +882,10 @@ M.add = function(mode)
 		surr_info.did_count = true
 	end
 
-	local respect_selection_type = get_config().respect_selection_type
+	region_replace({ from = { line = marks.second.line, col = marks.second.col + 1 } }, surr_info.right)
+	region_replace({ from = marks.first }, surr_info.left)
 
-	if not respect_selection_type or marks.selection_type == "charwise" then
-		region_replace({ from = { line = marks.second.line, col = marks.second.col + 1 } }, surr_info.right)
-		region_replace({ from = marks.first }, surr_info.left)
-
-		set_cursor(marks.first.line, marks.first.col + surr_info.left:len())
-
-		return
-	end
-
-	if marks.selection_type == "linewise" then
-		local from_line, to_line = marks.first.line, marks.second.line
-
-		local init_indent = get_range_indent(from_line, to_line)
-		shift_indent(">", from_line, to_line)
-
-		set_cursor_nonblank(from_line)
-
-		vim.fn.append(to_line, init_indent .. surr_info.right)
-		vim.fn.append(from_line - 1, init_indent .. surr_info.left)
-
-		return
-	end
-
-	if marks.selection_type == "blockwise" then
-		local from_col, to_col = marks.first.col, marks.second.col
-		from_col, to_col = math.min(from_col, to_col), math.max(from_col, to_col)
-
-		for i = marks.first.line, marks.second.line do
-			region_replace({ from = { line = i, col = to_col + 1 } }, surr_info.right)
-			region_replace({ from = { line = i, col = from_col } }, surr_info.left)
-		end
-
-		set_cursor(marks.first.line, from_col + surr_info.left:len())
-
-		return
-	end
+	set_cursor(marks.first.line, marks.first.col + surr_info.left:len())
 end
 
 M.delete = function()
@@ -1108,23 +898,8 @@ M.delete = function()
 	region_replace(surr.left, {})
 
 	local from = surr.left.from
+	---@diagnostic disable-next-line: need-check-nil
 	set_cursor(from.line, from.col)
-
-	if not get_config().respect_selection_type then
-		return
-	end
-
-	local from_line, to_line = surr.left.from.line, surr.right.from.line
-	local is_linewise_delete = from_line < to_line and is_line_blank(from_line) and is_line_blank(to_line)
-	if is_linewise_delete then
-		shift_indent("<", from_line, to_line)
-
-		set_cursor_nonblank(from_line + 1)
-
-		local buf_id = vim.api.nvim_get_current_buf()
-		vim.fn.deletebufline(buf_id, to_line)
-		vim.fn.deletebufline(buf_id, from_line)
-	end
 end
 
 M.replace = function()
@@ -1142,6 +917,7 @@ M.replace = function()
 	region_replace(surr.left, new_surr_info.left)
 
 	local from = surr.left.from
+	---@diagnostic disable-next-line: need-check-nil
 	set_cursor(from.line, from.col + new_surr_info.left:len())
 end
 
@@ -1161,6 +937,7 @@ local get_matched_range_pairs_builtin = function(captures)
 	end
 
 	local outer_matches = {}
+	---@diagnostic disable-next-line: need-check-nil
 	for _, tree in ipairs(parser:trees()) do
 		vim.list_extend(outer_matches, get_builtin_matches(captures.outer:sub(2), tree:root(), query))
 	end
@@ -1218,7 +995,7 @@ local apply_config = function(config)
 
 	local m = config.mappings
 
-	expr_map(m.add, make_operator("add", nil, true), "Add surrounding")
+	expr_map(m.add, make_operator("add", true), "Add surrounding")
 	expr_map(m.delete, make_operator("delete"), "Delete surrounding")
 	expr_map(m.replace, make_operator("replace"), "Replace surrounding")
 end
