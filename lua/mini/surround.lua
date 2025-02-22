@@ -10,8 +10,6 @@ M.config = {
 	mappings = {},
 
 	n_lines = 20,
-
-	silent = false,
 }
 
 local default_config = vim.deepcopy(M.config)
@@ -251,10 +249,6 @@ local get_config = function(config)
 end
 
 local echo = function(msg, is_important)
-	if get_config().silent then
-		return
-	end
-
 	msg = type(msg) == "string" and { { msg } } or msg
 	table.insert(msg, 1, { "(mini.surround) ", "WarningMsg" })
 
@@ -281,14 +275,6 @@ local unecho = function()
 	if cache.msg_shown then
 		vim.cmd([[echo '' | redraw]])
 	end
-end
-
-local map = function(mode, lhs, rhs, opts)
-	if lhs == "" then
-		return
-	end
-	opts = vim.tbl_deep_extend("force", { silent = true }, opts or {})
-	vim.keymap.set(mode, lhs, rhs, opts)
 end
 
 local get_line_cols = function(line_num)
@@ -986,9 +972,11 @@ local setup_config = function(config)
 	return config
 end
 
-local apply_config = function(config)
-	config = config
+local map = function(mode, lhs, rhs, opts)
+	vim.keymap.set(mode, lhs, rhs, opts)
+end
 
+local apply_config = function(config)
 	local expr_map = function(lhs, rhs, desc)
 		map("n", lhs, rhs, { expr = true, desc = desc })
 	end
