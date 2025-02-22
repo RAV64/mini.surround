@@ -3,50 +3,16 @@ local tbl_flatten = vim.fn.has("nvim-0.10") == 1 and function(x)
 	return vim.iter(x):flatten(math.huge):totable()
 end or vim.tbl_flatten
 
-local M = {}
+local Surround = {}
 local cache = {}
 
-M.config = {
+Surround.config = {
 	mappings = {},
-
 	n_lines = 20,
 }
 
-local default_config = vim.deepcopy(M.config)
-
-local get_match_range = function(node, metadata)
-	return (metadata or {}).range and metadata.range or { node:range() }
-end
-
-local get_builtin_matches = function(capture, root, query)
-	local res = {}
-	for capture_id, node, metadata in query:iter_captures(root, 0) do
-		if query.captures[capture_id] == capture then
-			table.insert(res, { node = node, metadata = (metadata or {})[capture_id] or {} })
-		end
-	end
-	return res
-end
-
-local get_biggest_range = function(match_arr)
-	local best_range, best_byte_count = nil, -math.huge
-	for _, match in ipairs(match_arr) do
-		local range = get_match_range(match.node, match.metadata)
-		local start_byte = vim.fn.line2byte(range[1] + 1) + range[2]
-		local end_byte = vim.fn.line2byte(range[3] + 1) + range[4] - 1
-		local byte_count = end_byte - start_byte + 1
-		if best_byte_count < byte_count then
-			best_range, best_byte_count = range, byte_count
-		end
-	end
-
-	return best_range
-end
-
-local error_treesitter = function(failed_get, lang)
-	local bufnr = vim.api.nvim_get_current_buf()
-	local msg = string.format([[Can not get %s for buffer %d and language '%s'.]], failed_get, bufnr, lang)
-	error(msg)
+local h_error = function(msg)
+	error("(mini.surround) " .. msg, 0)
 end
 
 local is_region = function(x)
@@ -244,10 +210,6 @@ local region_is_empty = function(region)
 	return region.to == nil
 end
 
-local get_config = function(config)
-	return vim.tbl_deep_extend("force", config, vim.b.minisurround_config or {}, config or {})
-end
-
 local echo = function(msg, is_important)
 	msg = type(msg) == "string" and { { msg } } or msg
 	table.insert(msg, 1, { "(mini.surround) ", "WarningMsg" })
@@ -319,9 +281,7 @@ end
 local make_operator = function(task, ask_for_textobject)
 	return function()
 		cache = { count = vim.v.count1 }
-
-		vim.o.operatorfunc = "v:lua." .. task
-
+		vim.o.operatorfunc = "v:lua.Surround." .. task
 		return '<Cmd>echon ""<CR>g@' .. (ask_for_textobject and "" or " ")
 	end
 end
@@ -347,10 +307,7 @@ local user_surround_id = function(sur_type)
 	return char
 end
 
-local NS_ID = {
-	highlight = vim.api.nvim_create_namespace("MiniSurroundHighlight"),
-	input = vim.api.nvim_create_namespace("MiniSurroundInput"),
-}
+local INPUT = vim.api.nvim_create_namespace("MiniSurroundInput")
 
 local user_input = function(prompt, text)
 	local on_key = vim.on_key or vim.register_keystroke_callback
@@ -359,14 +316,14 @@ local user_input = function(prompt, text)
 		if key == vim.api.nvim_replace_termcodes("<Esc>", true, true, true) then
 			was_cancelled = true
 		end
-	end, NS_ID.input)
+	end, INPUT)
 
 	local opts = { prompt = "(mini.surround) " .. prompt .. ": ", default = text or "" }
 	vim.cmd("echohl Question")
 	local ok, res = pcall(vim.fn.input, opts)
 	vim.cmd([[echohl None | echo '' | redraw]])
 
-	on_key(nil, NS_ID.input)
+	on_key(nil, INPUT)
 
 	if not ok or was_cancelled then
 		return
@@ -382,32 +339,8 @@ local builtin_surroundings = {
 	["}"] = { input = { "%b{}", "^.().*().$" }, output = { left = "{", right = "}" } },
 	["<"] = { input = { "%b<>", "^.%s*().-()%s*.$" }, output = { left = "< ", right = " >" } },
 	[">"] = { input = { "%b<>", "^.().*().$" }, output = { left = "<", right = ">" } },
-	["?"] = {
-		input = function()
-			local left = user_input("Left surrounding")
-			if left == nil or left == "" then
-				return
-			end
-			local right = user_input("Right surrounding")
-			if right == nil or right == "" then
-				return
-			end
-
-			return { vim.pesc(left) .. "().-()" .. vim.pesc(right) }
-		end,
-		output = function()
-			local left = user_input("Left surrounding")
-			if left == nil then
-				return
-			end
-			local right = user_input("Right surrounding")
-			if right == nil then
-				return
-			end
-			return { left = left, right = right }
-		end,
-	},
 	["b"] = { input = { { "%b()", "%b[]", "%b{}" }, "^.().*().$" }, output = { left = "(", right = ")" } },
+	["q"] = { input = { { "'.-'", '".-"', "`.-`" }, "^.().*().$" }, output = { left = '"', right = '"' } },
 	["f"] = {
 		input = { "%f[%w_%.][%w_%.]+%b()", "^.-%(().*()%)$" },
 		output = function()
@@ -429,7 +362,6 @@ local builtin_surroundings = {
 			return { left = "<" .. tag_full .. ">", right = "</" .. tag_name .. ">" }
 		end,
 	},
-	["q"] = { input = { { "'.-'", '".-"', "`.-`" }, "^.().*().$" }, output = { left = '"', right = '"' } },
 }
 
 local get_default_surrounding_info = function(char)
@@ -557,27 +489,6 @@ local region_replace = function(region, text)
 	pcall(vim.api.nvim_buf_set_text, 0, start_row, start_col, end_row, end_col, text)
 end
 
-local pos_to_left = function(pos)
-	if pos.line == 1 and pos.col == 1 then
-		return { line = pos.line, col = pos.col }
-	end
-	if pos.col == 1 then
-		return { line = pos.line - 1, col = get_line_cols(pos.line - 1) }
-	end
-	return { line = pos.line, col = pos.col - 1 }
-end
-
-local pos_to_right = function(pos)
-	local n_cols = get_line_cols(pos.line)
-	if pos.line == vim.api.nvim_buf_line_count(0) and pos.col > n_cols then
-		return { line = pos.line, col = n_cols }
-	end
-	if pos.col > n_cols then
-		return { line = pos.line + 1, col = 1 }
-	end
-	return { line = pos.line, col = pos.col + 1 }
-end
-
 local extract_surr_spans = function(s, extract_pattern)
 	local positions = { s:match(extract_pattern) }
 
@@ -592,7 +503,7 @@ local extract_surr_spans = function(s, extract_pattern)
 	if not is_valid_positions then
 		local msg = "Could not extract proper positions (two or four empty captures) from "
 			.. string.format([[string '%s' with extraction pattern '%s'.]], s, extract_pattern)
-		error(msg)
+		h_error(msg)
 	end
 
 	if #positions == 2 then
@@ -792,35 +703,12 @@ local find_surrounding_region_pair = function(surr_spec, opts)
 end
 
 local get_default_opts = function()
-	local config = get_config()
 	local cur_pos = vim.api.nvim_win_get_cursor(0)
 	return {
-		n_lines = config.n_lines,
+		n_lines = Surround.config.n_lines,
 		n_times = cache.count or vim.v.count1,
 		reference_region = { from = { line = cur_pos[1], col = cur_pos[2] + 1 } },
 	}
-end
-
-local prepare_captures = function(captures)
-	local is_capture = function(x)
-		return type(x) == "string" and x:sub(1, 1) == "@"
-	end
-
-	if not (type(captures) == "table" and is_capture(captures.outer) and is_capture(captures.inner)) then
-		error("Wrong format for `captures`. See `gen_spec.input.treesitter()` for details.")
-	end
-
-	return { outer = captures.outer, inner = captures.inner }
-end
-
-local get_matched_range_pairs_plugin = function(captures)
-	local ts_queries = require("nvim-treesitter.query")
-	local outer_matches = ts_queries.get_capture_matches_recursively(0, captures.outer, "textobjects")
-
-	return vim.tbl_map(function(m)
-		local inner_matches = ts_queries.get_capture_matches(0, captures.inner, "textobjects", m.node, nil)
-		return { outer = get_match_range(m.node, m.metadata), inner = get_biggest_range(inner_matches) }
-	end, outer_matches)
 end
 
 local find_surrounding = function(surr_spec, opts)
@@ -845,11 +733,28 @@ local find_surrounding = function(surr_spec, opts)
 
 	return region_pair
 end
-error = function(msg)
-	error("(mini.surround) " .. msg, 0)
+
+local map = function(mode, lhs, rhs, opts)
+	vim.keymap.set(mode, lhs, rhs, opts)
 end
 
-M.add = function(mode)
+local apply_config = function(config)
+	local expr_map = function(lhs, rhs, desc)
+		map("n", lhs, rhs, { expr = true, desc = desc })
+	end
+
+	local m = config.mappings
+
+	expr_map(m.add, make_operator("add", true), "Add surrounding")
+	expr_map(m.delete, make_operator("delete"), "Delete surrounding")
+	expr_map(m.replace, make_operator("replace"), "Replace surrounding")
+end
+
+local create_default_hl = function()
+	vim.api.nvim_set_hl(0, "MiniSurround", { default = true, link = "IncSearch" })
+end
+
+Surround.add = function(mode)
 	local marks = get_marks_pos(mode)
 
 	local surr_info
@@ -874,7 +779,7 @@ M.add = function(mode)
 	set_cursor(marks.first.line, marks.first.col + surr_info.left:len())
 end
 
-M.delete = function()
+Surround.delete = function()
 	local surr = find_surrounding(get_surround_spec("input", true))
 	if surr == nil then
 		return "<Esc>"
@@ -888,7 +793,7 @@ M.delete = function()
 	set_cursor(from.line, from.col)
 end
 
-M.replace = function()
+Surround.replace = function()
 	local surr = find_surrounding(get_surround_spec("input", true))
 	if surr == nil then
 		return "<Esc>"
@@ -907,104 +812,11 @@ M.replace = function()
 	set_cursor(from.line, from.col + new_surr_info.left:len())
 end
 
-local gen_spec = { input = {}, output = {} }
-
-local get_matched_range_pairs_builtin = function(captures)
-	local lang = vim.bo.filetype
-	local has_parser, parser = pcall(vim.treesitter.get_parser, 0, lang, { error = false })
-	if not has_parser or parser == nil then
-		error_treesitter("parser", lang)
-	end
-
-	local get_query = vim.fn.has("nvim-0.9") == 1 and vim.treesitter.query.get or vim.treesitter.get_query
-	local query = get_query(lang, "textobjects")
-	if query == nil then
-		error_treesitter("query", lang)
-	end
-
-	local outer_matches = {}
-	---@diagnostic disable-next-line: need-check-nil
-	for _, tree in ipairs(parser:trees()) do
-		vim.list_extend(outer_matches, get_builtin_matches(captures.outer:sub(2), tree:root(), query))
-	end
-
-	return vim.tbl_map(function(m)
-		local inner_matches = get_builtin_matches(captures.inner:sub(2), m.node, query)
-		return { outer = get_match_range(m.node, m.metadata), inner = get_biggest_range(inner_matches) }
-	end, outer_matches)
-end
-
-gen_spec.input.treesitter = function(captures, opts)
-	opts = vim.tbl_deep_extend("force", { use_nvim_treesitter = true }, opts or {})
-	captures = prepare_captures(captures)
-
-	return function()
-		local has_nvim_treesitter = pcall(require, "nvim-treesitter") and pcall(require, "nvim-treesitter.query")
-		local range_pair_querier = (has_nvim_treesitter and opts.use_nvim_treesitter) and get_matched_range_pairs_plugin
-			or get_matched_range_pairs_builtin
-		local matched_range_pairs = range_pair_querier(captures)
-
-		return vim.tbl_map(function(range_pair)
-			local left_from_line, left_from_col, right_to_line, right_to_col = unpack(range_pair.outer)
-			local left_from = { line = left_from_line + 1, col = left_from_col + 1 }
-			local right_to = { line = right_to_line + 1, col = right_to_col }
-
-			local left_to, right_from
-			if range_pair.inner == nil then
-				left_to = right_to
-				right_from = pos_to_right(right_to)
-				right_to = nil
-			else
-				local left_to_line, left_to_col, right_from_line, right_from_col = unpack(range_pair.inner)
-				left_to = { line = left_to_line + 1, col = left_to_col + 1 }
-				right_from = { line = right_from_line + 1, col = right_from_col }
-				left_to, right_from = pos_to_left(left_to), pos_to_right(right_from)
-			end
-
-			return { left = { from = left_from, to = left_to }, right = { from = right_from, to = right_to } }
-		end, matched_range_pairs)
-	end
-end
-
-local setup_config = function(config)
-	config = vim.tbl_deep_extend("force", vim.deepcopy(default_config), config or {})
-
-	return config
-end
-
-local map = function(mode, lhs, rhs, opts)
-	vim.keymap.set(mode, lhs, rhs, opts)
-end
-
-local apply_config = function(config)
-	local expr_map = function(lhs, rhs, desc)
-		map("n", lhs, rhs, { expr = true, desc = desc })
-	end
-
-	local m = config.mappings
-
-	expr_map(m.add, make_operator("add", true), "Add surrounding")
-	expr_map(m.delete, make_operator("delete"), "Delete surrounding")
-	expr_map(m.replace, make_operator("replace"), "Replace surrounding")
-end
-
-local create_default_hl = function()
-	vim.api.nvim_set_hl(0, "MiniSurround", { default = true, link = "IncSearch" })
-end
-
-local create_autocommands = function()
-	local gr = vim.api.nvim_create_augroup("MiniSurround", {})
-	vim.api.nvim_create_autocmd("ColorScheme", { group = gr, callback = create_default_hl, desc = "Ensure colors" })
-end
-
-M.setup = function(config)
-	_G.Surround = M
-
-	config = setup_config(config)
+Surround.setup = function(config)
+	_G.Surround = Surround
 
 	apply_config(config)
-	create_autocommands()
 	create_default_hl()
 end
 
-return M
+return Surround
